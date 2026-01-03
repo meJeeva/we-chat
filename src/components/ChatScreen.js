@@ -17,13 +17,14 @@ import { useDispatch, useSelector } from 'react-redux';
 import { View, Keyboard } from 'react-native';
 import { messagesAPI } from '../redux/slices/userSlice';
 import { RefreshControl } from 'react-native';
+import { useIsFocused } from '@react-navigation/native';
 
 const socket = io(BASE_URL, {
     transports: ['websocket'],
     autoConnect: true,
 });
 
-const ChatScreen = ({ route }) => {
+const ChatScreen = ({ route, navigation }) => {
     const { receiver } = route.params;
     const [message, setMessage] = useState([]);
     const flatListRef = useRef();
@@ -31,13 +32,18 @@ const ChatScreen = ({ route }) => {
     const [text, setText] = useState('');
     const [keyboardHeight, setKeyboardHeight] = useState(0);
     const [refresh, setRefresh] = useState(false);
+    const [isOnline, setIsOnline] = useState(false);
+
+    const isFocused = useIsFocused();
 
     const dispatch = useDispatch();
     const { messagesList } = useSelector(state => state.user);
+    const lastMessage = messagesList?.[messagesList.length - 1];
 
     useEffect(() => {
         const showSub = Keyboard.addListener('keyboardDidShow', e => {
             setKeyboardHeight(e.endCoordinates.height + 20);
+            scrollToId(lastMessage.id);
         });
 
         const hideSub = Keyboard.addListener('keyboardDidHide', () => {
@@ -50,10 +56,39 @@ const ChatScreen = ({ route }) => {
         };
     }, []);
 
+
+    useEffect(() => {
+        if (!userId) return;
+        if (isFocused) {
+            socket.emit('user_online', userId);
+        }
+        return () => {
+            socket.emit('user_offline', userId);
+        }
+    }, [isFocused, userId]);
+
+
     useEffect(() => {
         if (!messagesList) return;
         setMessage(messagesList);
     }, [messagesList]);
+
+    useEffect(() => {
+        if (!navigation) return;
+        navigation.setOptions({
+            title: receiver.name,
+            headerRight: () => {
+                return (
+                    <Text style={{
+                        color: isOnline ? 'green' : 'red'
+                    }}>{ }{isOnline ? 'Online' : 'Offline'}</Text>
+                )
+            }
+        });
+        return () => navigation.setOptions({
+            title: '',
+        })
+    }, [navigation, isOnline]);
 
 
     const sendHandler = () => {
@@ -68,6 +103,27 @@ const ChatScreen = ({ route }) => {
             ? `room_${userId}_${receiver.id}`
             : `room_${receiver.id}_${userId}`;
 
+    useEffect(() => {
+        const handleUserOnline = (ids) => {
+            if (ids.includes(receiver.id)) {
+                setIsOnline(true);
+            }
+        };
+
+        const handleUserOffline = (id) => {
+            if (receiver.id === id) {
+                setIsOnline(false);
+            }
+        };
+
+        socket.on('user_online', handleUserOnline);
+        socket.on('user_offline', handleUserOffline);
+
+        return () => {
+            socket.off('user_online', handleUserOnline);
+            socket.off('user_offline', handleUserOffline);
+        };
+    }, []);
 
 
     useEffect(() => {
@@ -91,9 +147,19 @@ const ChatScreen = ({ route }) => {
         if (userId && receiver.id) getMessages();
     }, [userId, receiver.id]);
 
+    useEffect(() => {
+        socket.emit('join', userId);
+    }, [userId])
+
+    const scrollToId = (id) => {
+        const findIndex = message.findIndex(msg => msg.id === id);
+        if (findIndex !== -1) {
+            flatListRef.current?.scrollToIndex({ index: findIndex, animated: true });
+        }
+    }
+
     const sendMessage = (msg) => {
         if (!msg.trim()) return;
-
         const newMessage = {
             roomId,
             sender_id: userId,
@@ -101,7 +167,6 @@ const ChatScreen = ({ route }) => {
             message: msg,
             createdAt: new Date().toISOString(),
         };
-
         socket.emit('send_message', newMessage);
     };
 
